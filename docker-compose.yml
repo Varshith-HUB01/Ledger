@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+
+  worker:
+    build:
+      context: ./worker
+    environment:
+      - DATABASE_URL=postgres://postgres:postgres@db:5432/ledger?sslmode=disable
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      - db
+      - rabbitmq
+    restart: always
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./infra/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+
+  api:
+    build:
+      context: ./api
+    environment:
+      - DATABASE_URL=postgres://postgres:postgres@db:5432/ledger?sslmode=disable
+      - REDIS_URL=redis:6379
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - PORT=8080
+    depends_on:
+      - db
+      - redis
+      - rabbitmq
+    restart: on-failure
+    deploy:
+      replicas: 3
+
+  db:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=ledger
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./api/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5672:5672"   # Message queue port
+      - "15672:15672" # Management UI port
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml
+    depends_on:
+      - nginx
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000" # Changed the first number to 3001
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres_data:

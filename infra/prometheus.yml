@@ -1,0 +1,9 @@
+global:
+  scrape_interval: 5s # Scrape data every 5 seconds for real-time updates
+
+scrape_configs:
+  - job_name: 'ledger_api'
+    static_configs:
+      # We tell it to scrape the Nginx load balancer, which will forward 
+      # the request to our API cluster.
+      - targets: ['nginx:80']
