@@ -68,6 +68,12 @@ type ClickEvent struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
+// Credentials struct for handling Auth payloads
+type Credentials struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
 func main() {
 	ctx := context.Background()
 
@@ -130,7 +136,7 @@ func main() {
 
 	r := chi.NewRouter()
 
-	// ADD CORS MIDDLEWARE HERE BELOW THE ROUTER INITIALIZATION
+	// CORS MIDDLEWARE
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -146,7 +152,7 @@ func main() {
 		})
 	})
 
-	// PROMETHEUS MIDDLEWARE (Tracks latency and status codes)
+	// PROMETHEUS MIDDLEWARE
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
@@ -157,7 +163,6 @@ func main() {
 			duration := time.Since(start).Seconds()
 			status := strconv.Itoa(ww.Status())
 
-			// Don't track the /metrics endpoint itself
 			if r.URL.Path != "/metrics" {
 				httpRequestsTotal.WithLabelValues(r.Method, r.URL.Path, status).Inc()
 				httpRequestDuration.WithLabelValues(r.Method, r.URL.Path).Observe(duration)
@@ -174,6 +179,11 @@ func main() {
 	// EXPOSE THE METRICS ENDPOINT
 	r.Handle("/metrics", promhttp.Handler())
 
+	// AUTHENTICATION ROUTES
+	r.Post("/register", app.Register)
+	r.Post("/login", app.Login)
+
+	// RATE-LIMITED APP ROUTES
 	r.Group(func(r chi.Router) {
 		r.Use(app.rateLimitMiddleware)
 		r.Post("/shorten", app.handleShorten)
@@ -188,6 +198,67 @@ func main() {
 	log.Printf("Starting Ledger API on port %s...", port)
 	log.Fatal(http.ListenAndServe(":"+port, r))
 }
+
+// ----------------- AUTHENTICATION HANDLERS ----------------- //
+
+func (a *App) Register(w http.ResponseWriter, r *http.Request) {
+	var creds Credentials
+	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	hashedPassword, err := HashPassword(creds.Password)
+	if err != nil {
+		http.Error(w, "Error hashing password", http.StatusInternalServerError)
+		return
+	}
+
+	var userID int
+	ctx := r.Context()
+	err = a.db.QueryRow(ctx, "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id", creds.Email, hashedPassword).Scan(&userID)
+
+	if err != nil {
+		// WE CHANGED THIS SO IT SHOWS THE REAL POSTGRES ERROR
+		http.Error(w, "Database Error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{"message": "User created successfully"})
+}
+func (a *App) Login(w http.ResponseWriter, r *http.Request) {
+	var creds Credentials
+	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	var storedHash string
+	var userID int
+	ctx := r.Context()
+
+	err := a.db.QueryRow(ctx, "SELECT id, password_hash FROM users WHERE email = $1", creds.Email).Scan(&userID, &storedHash)
+	if err != nil {
+		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		return
+	}
+
+	if !CheckPasswordHash(creds.Password, storedHash) {
+		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		return
+	}
+
+	tokenString, err := GenerateJWT(userID)
+	if err != nil {
+		http.Error(w, "Error generating token", http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{"token": tokenString})
+}
+
+// ----------------- URL HANDLERS ----------------- //
 
 func generateShortCode() string {
 	b := make([]byte, codeLength)
