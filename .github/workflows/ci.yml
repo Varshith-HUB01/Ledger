@@ -33,4 +33,5 @@ jobs:
           go build -v ./...
 
       - name: Verify Docker Compose Build
-        run: docker-compose build
+        run: docker compose build
+       
